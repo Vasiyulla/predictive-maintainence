@@ -8,7 +8,6 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
-
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
@@ -66,13 +65,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize API client in session state
+# Initialize session state - MUST BE FIRST
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = True
+    st.session_state.api_client = APIClient()
+    st.session_state.authenticated = False
+    st.session_state.current_page = "login"
+    st.session_state.user = None
+
+# Ensure API client exists
 if 'api_client' not in st.session_state:
     st.session_state.api_client = APIClient()
 
+# Ensure authenticated state exists
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
+# Ensure current page exists
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "login"
 
@@ -100,9 +109,10 @@ def show_login_page():
                         
                         if result.get("success"):
                             st.session_state.authenticated = True
+                            st.session_state.user = result['user']
                             st.session_state.current_page = "dashboard"
                             st.success(f"Welcome, {result['user']['username']}!")
-                            time.sleep(1)
+                            time.sleep(0.5)
                             st.rerun()
                         else:
                             st.error(result.get("error", "Login failed"))
@@ -142,9 +152,10 @@ def show_dashboard():
     # Sidebar
     with st.sidebar:
         st.markdown("### User Information")
-        user = st.session_state.api_client.user
-        st.write(f"**Username:** {user['username']}")
-        st.write(f"**Role:** {user['role'].capitalize()}")
+        user = st.session_state.get('user', st.session_state.api_client.user)
+        if user:
+            st.write(f"**Username:** {user.get('username', 'N/A')}")
+            st.write(f"**Role:** {user.get('role', 'N/A').capitalize()}")
         st.markdown("---")
         
         # System health
@@ -168,15 +179,32 @@ def show_dashboard():
         
         # Navigation
         st.markdown("### Navigation")
-        if st.button("📊 Dashboard", use_container_width=True):
+        
+        # Dashboard button
+        if st.session_state.current_page == "dashboard":
+            st.button("📊 Dashboard", disabled=True, use_container_width=True)
+        elif st.button("📊 Dashboard", use_container_width=True, key="nav_dashboard"):
             st.session_state.current_page = "dashboard"
             st.rerun()
         
-        if st.button("🔬 ML Analysis", use_container_width=True):
+        # Analytics button
+        if st.session_state.current_page == "analytics":
+            st.button("📈 Analytics", disabled=True, use_container_width=True)
+        elif st.button("📈 Analytics", use_container_width=True, key="nav_analytics"):
+            st.session_state.current_page = "analytics"
+            st.rerun()
+        
+        # Quick Analysis button
+        if st.session_state.current_page == "analysis":
+            st.button("🔬 Quick Analysis", disabled=True, use_container_width=True)
+        elif st.button("🔬 Quick Analysis", use_container_width=True, key="nav_analysis"):
             st.session_state.current_page = "analysis"
             st.rerun()
         
-        if st.button("⚙️ System Settings", use_container_width=True):
+        # Settings button
+        if st.session_state.current_page == "settings":
+            st.button("⚙️ Settings", disabled=True, use_container_width=True)
+        elif st.button("⚙️ Settings", use_container_width=True, key="nav_settings"):
             st.session_state.current_page = "settings"
             st.rerun()
         
@@ -186,15 +214,42 @@ def show_dashboard():
             st.session_state.api_client.logout()
             st.session_state.authenticated = False
             st.session_state.current_page = "login"
+            st.session_state.user = None
+            st.success("Logged out successfully!")
+            time.sleep(0.5)
             st.rerun()
     
     # Main content based on current page
-    if st.session_state.current_page == "dashboard":
+    try:
+        if st.session_state.current_page == "dashboard":
+            try:
+                from pages.dashboard import show_dashboard
+                show_dashboard(st.session_state.api_client)
+            except ImportError:
+                st.warning("Dashboard page not found. Showing monitoring page instead.")
+                show_monitoring_page()
+        elif st.session_state.current_page == "analytics":
+            try:
+                from pages.analytics import show_analytics
+                show_analytics(st.session_state.api_client)
+            except ImportError:
+                st.error("Analytics page not found. Please ensure pages/analytics.py exists.")
+                st.info("Showing basic monitoring instead.")
+                show_monitoring_page()
+        elif st.session_state.current_page == "monitoring":
+            show_monitoring_page()
+        elif st.session_state.current_page == "analysis":
+            show_analysis_page()
+        elif st.session_state.current_page == "settings":
+            show_settings_page()
+        else:
+            # Fallback to dashboard
+            st.session_state.current_page = "dashboard"
+            st.rerun()
+    except Exception as e:
+        st.error(f"Error loading page: {e}")
+        st.info("Showing basic monitoring page.")
         show_monitoring_page()
-    elif st.session_state.current_page == "analysis":
-        show_analysis_page()
-    elif st.session_state.current_page == "settings":
-        show_settings_page()
 
 def show_monitoring_page():
     """Display real-time monitoring interface"""
