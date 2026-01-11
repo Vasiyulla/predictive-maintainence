@@ -5,8 +5,8 @@ Central routing layer for PredictXAI microservices
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel 
+from typing import Optional, List
 import httpx
 
 from config.settings import settings
@@ -45,6 +45,12 @@ class SensorData(BaseModel):
     pressure: float
     rpm: float
 
+class MachineCreate(BaseModel):
+    name: str
+    type: str
+    location: Optional[str]
+    features: List[str]
+    settings: Optional[dict] = None
 
 # -----------------------------
 # Token Verification
@@ -146,6 +152,23 @@ async def login(credentials: UserLogin):
     except httpx.RequestError:
         raise HTTPException(status_code=503, detail="Auth service unavailable")
 
+# -----------------------------
+# MACHINE ROUTES
+# -----------------------------
+# Add machine management routes
+@router.post("/api/machines")
+async def add_machine_proxy(machine_data: dict, user=Depends(verify_token)):
+    if not user: raise HTTPException(status_code=401)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"{AUTH_SERVICE_URL}/machines", json=machine_data)
+        return response.json()
+
+@router.get("/api/machines")
+async def get_machines_proxy(user=Depends(verify_token)):
+    if not user: raise HTTPException(status_code=401)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{AUTH_SERVICE_URL}/machines")
+        return response.json()
 
 # -----------------------------
 # ML ROUTES

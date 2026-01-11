@@ -85,7 +85,70 @@ class APIClient:
                 return {"success": False, "error": response.json().get("detail")}
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
+      
+    def add_machine(self, machine_data: Dict) -> Dict:
+        """Add a new machine to the database"""
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/machines",
+                json=machine_data,
+                headers=self._get_headers(),
+                timeout=10
+            )
+            if response.status_code == 201 or response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            else:
+                return {"success": False, "error": response.json().get("detail", "Failed to add machine")}
+        except Exception as e:
+            return {"success": False, "error": str(e)} 
+         
+    def get_machines(self) -> list:
+        """Fetch machine names for the dashboard dropdown"""
+        if not self.token:
+            return []
+        try:
+            # Use self.base_url to match your __init__ 
+            headers = self._get_headers() 
+            response = requests.get(
+                f"{self.base_url}/api/machines", 
+                headers=headers, 
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                # Ensure we are parsing the JSON correctly
+                data = response.json()
+                # If the backend returns a list of objects, extract the names
+                return [m['name'] for m in data]
+            return []
+        except Exception as e:
+            # Log the error to terminal so you can see why it fails
+            print(f"DEBUG: Error fetching machines: {e}")
+            return []
+    def add_machine(self, machine_data: dict) -> dict:
+        """Sends new machine data to the backend"""
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/machines", 
+                json=machine_data, 
+                headers=self._get_headers(),
+                timeout=10
+            )
+            # Check for successful creation (201) or standard success (200)
+            if response.status_code in [200, 201]:
+                return {"success": True, "data": response.json()}
+            
+            # Extract error detail if available in JSON, else use raw text
+            try:
+                error_detail = response.json().get("detail", "Unknown error")
+            except:
+                error_detail = response.text or f"Status Code {response.status_code}"
+                
+            return {"success": False, "error": error_detail}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        
+            
     def analyze_machine(self, sensor_data: Dict) -> Dict:
         """Execute multi-agent analysis"""
         try:

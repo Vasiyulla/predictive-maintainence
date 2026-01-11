@@ -1,663 +1,322 @@
 """
 ML Prediction Module
-Loads trained model and performs real-time predictions for predictive maintenance
+Loads trained models (Classifier & Regressor) and performs real-time predictions.
 
-This module handles:
-- Loading pre-trained ML model and scaler
-- Real-time failure probability prediction
-- Risk level classification
-- Batch predictions
-- Model information retrieval
+Features:
+- Classification: Supports Random Forest, SVM, and LSTM (Keras) models.
+- Regression: Predicts Remaining Useful Life (RUL).
+- Anomaly Detection: Analyzes Energy Efficiency.
+- Explainability: Generates 'Why' reports for predictions.
 """
+
 import joblib
 import numpy as np
+import json
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
-import json
+
+# Conditionally import TensorFlow for LSTM support
+try:
+    import tensorflow as tf
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
 
 from config.settings import settings
 
-
 class PredictiveMaintenancePredictor:
     """
-    ML Predictor for failure probability prediction
-    
-    Attributes:
-        model: Trained RandomForest classifier
-        scaler: Feature scaler (StandardScaler)
-        feature_names: List of expected feature names
-        model_path: Path to saved model file
-        scaler_path: Path to saved scaler file
-        model_loaded: Whether model is successfully loaded
-        model_metadata: Metadata about the model
+    ML Predictor for predictive maintenance.
+    Manages loading and inference for multiple model types.
     """
     
-    def __init__(
-        self, 
-        model_path: Optional[Path] = None, 
-        scaler_path: Optional[Path] = None
-    ):
+    def __init__(self, model_dir: Optional[Path] = None):
         """
-        Initialize the predictor and load model
+        Initialize the predictor and load models.
         
         Args:
-            model_path: Path to model file (default: from settings)
-            scaler_path: Path to scaler file (default: from settings)
+            model_dir: Directory containing model artifacts. 
+                       Defaults to parent of settings.MODEL_PATH.
         """
-        self.model = None
+        self.classifier = None
+        self.regressor = None
         self.scaler = None
-        self.feature_names = ['temperature', 'vibration', 'pressure', 'rpm']
+        
+        # Standard features used in training
+        self.feature_names = ['temperature', 'vibration', 'pressure', 'rpm', 'energy_kwh']
+        
         self.model_loaded = False
         self.model_metadata = {}
         
-        # Use default paths if not provided
-        if model_path is None:
-            model_path = settings.MODEL_PATH
-        if scaler_path is None:
-            scaler_path = settings.SCALER_PATH
+        # Set model directory
+        self.model_dir = model_dir if model_dir else settings.MODEL_PATH.parent
         
-        self.model_path = model_path
-        self.scaler_path = scaler_path
-        
-        # Load model on initialization
-        try:
-            self.load_model()
-        except Exception as e:
-            print(f"⚠ Warning: Could not load model on initialization: {e}")
-            print("  Please train the model or check file paths.")
-    
-    def load_model(self) -> bool:
+        # Load models on initialization
+        self.load_models()
+
+    def load_models(self) -> bool:
         """
-        Load trained model and scaler from disk
-        
-        Returns:
-            bool: True if successful, False otherwise
-        
-        Raises:
-            FileNotFoundError: If model or scaler files don't exist
+        Load Scaler, RUL Regressor, and the appropriate Classifier (RF/SVM/LSTM).
         """
-        # Check if model file exists
-        if not self.model_path.exists():
-            raise FileNotFoundError(
-                f"Model not found at {self.model_path}\n"
-                f"Please train the model first by running:\n"
-                f"  python -m services.ml_service.trainer"
-            )
-        
-        # Check if scaler file exists
-        if not self.scaler_path.exists():
-            raise FileNotFoundError(
-                f"Scaler not found at {self.scaler_path}\n"
-                f"Please train the model first by running:\n"
-                f"  python -m services.ml_service.trainer"
-            )
-        
         try:
-            # Load model
-            self.model = joblib.load(self.model_path)
-            print(f"✓ Model loaded from {self.model_path}")
+            print(f"▶ Loading models from {self.model_dir}...")
             
-            # Load scaler
-            self.scaler = joblib.load(self.scaler_path)
-            print(f"✓ Scaler loaded from {self.scaler_path}")
-            
-            # Extract model metadata
-            self._extract_model_metadata()
-            
+            # 1. Load Metadata (Critical for determining model type)
+            meta_path = self.model_dir / "model_metadata.json"
+            if meta_path.exists():
+                with open(meta_path, 'r') as f:
+                    self.model_metadata = json.load(f)
+            else:
+                print("⚠ Metadata not found. Assuming Random Forest default.")
+                self.model_metadata = {"model_type": "random_forest"}
+
+            model_type = self.model_metadata.get("model_type", "random_forest")
+
+            # 2. Load Scaler
+            scaler_path = self.model_dir / "scaler.joblib"
+            if not scaler_path.exists():
+                raise FileNotFoundError(f"Scaler not found at {scaler_path}")
+            self.scaler = joblib.load(scaler_path)
+
+            # 3. Load RUL Regressor
+            regressor_path = self.model_dir / "rul_regressor.joblib"
+            if not regressor_path.exists():
+                raise FileNotFoundError(f"RUL Regressor not found at {regressor_path}")
+            self.regressor = joblib.load(regressor_path)
+
+            # 4. Load Classifier based on Type
+            if model_type == "lstm":
+                if not TF_AVAILABLE:
+                    raise ImportError("Model is LSTM but TensorFlow is not installed.")
+                
+                keras_path = self.model_dir / "classifier.keras"
+                if not keras_path.exists():
+                    raise FileNotFoundError(f"LSTM model not found at {keras_path}")
+                
+                self.classifier = tf.keras.models.load_model(keras_path)
+                print("✓ Loaded LSTM Classifier (Keras)")
+                
+            else:
+                # Random Forest or SVM
+                classifier_path = self.model_dir / "classifier.joblib"
+                if not classifier_path.exists():
+                    raise FileNotFoundError(f"Classifier not found at {classifier_path}")
+                
+                self.classifier = joblib.load(classifier_path)
+                print(f"✓ Loaded {model_type.upper()} Classifier (Sklearn)")
+
             self.model_loaded = True
             return True
-            
+
         except Exception as e:
-            print(f"✗ Error loading model: {e}")
+            print(f"✗ Error loading models: {e}")
             self.model_loaded = False
             return False
-    
-    def _extract_model_metadata(self):
-        """Extract metadata from loaded model"""
-        try:
-            if self.model is not None:
-                self.model_metadata = {
-                    'model_type': type(self.model).__name__,
-                    'n_estimators': getattr(self.model, 'n_estimators', None),
-                    'max_depth': getattr(self.model, 'max_depth', None),
-                    'n_features': self.model.n_features_in_ if hasattr(self.model, 'n_features_in_') else len(self.feature_names),
-                    'feature_names': self.feature_names,
-                    'model_path': str(self.model_path),
-                    'scaler_path': str(self.scaler_path),
-                    'loaded_at': datetime.utcnow().isoformat()
-                }
-        except Exception as e:
-            print(f"Warning: Could not extract model metadata: {e}")
-            self.model_metadata = {}
-    
-    def _validate_input(self, sensor_data: Dict[str, float]) -> Dict[str, float]:
+
+    def _calculate_energy(self, data: Dict[str, float]) -> float:
         """
-        Validate and prepare input data
-        
-        Args:
-            sensor_data: Dictionary with sensor readings
-        
-        Returns:
-            Dict: Validated sensor data
-        
-        Raises:
-            ValueError: If required features are missing or invalid
+        Estimate energy consumption if physical sensor is missing.
+        Formula matches generator logic: E ~ (RPM * 0.05) + (Temp * 0.1)
         """
-        # Check all required features are present
-        missing_features = [f for f in self.feature_names if f not in sensor_data]
-        if missing_features:
-            raise ValueError(
-                f"Missing required features: {missing_features}\n"
-                f"Required features: {self.feature_names}"
-            )
+        return (data.get('rpm', 0) * 0.05) + (data.get('temperature', 0) * 0.1)
+
+    def _prepare_input(self, sensor_data: Dict[str, float]) -> Tuple[np.ndarray, float]:
+        """
+        Validate input, calculate missing energy, and scale features.
+        Returns: (Scaled Array, Raw Energy Value)
+        """
+        data = sensor_data.copy()
         
-        # Validate data types and ranges
-        validated_data = {}
+        # Auto-fill energy if missing
+        if 'energy_kwh' not in data:
+            data['energy_kwh'] = self._calculate_energy(data)
+            
+        # Ensure all features exist
+        missing = [f for f in self.feature_names if f not in data]
+        if missing:
+            raise ValueError(f"Missing required features: {missing}")
+            
+        # Create vector in correct order
+        vector = [data[f] for f in self.feature_names]
         
-        for feature in self.feature_names:
-            value = sensor_data[feature]
-            
-            # Convert to float
-            try:
-                value = float(value)
-            except (ValueError, TypeError):
-                raise ValueError(f"Invalid value for {feature}: {value} (must be numeric)")
-            
-            # Check for NaN or Inf
-            if np.isnan(value) or np.isinf(value):
-                raise ValueError(f"Invalid value for {feature}: {value} (NaN or Inf)")
-            
-            # Range validation (basic sanity checks)
-            if feature == 'temperature':
-                if value < 0 or value > 200:
-                    print(f"⚠ Warning: Temperature {value}°C is outside typical range (0-200)")
-            elif feature == 'vibration':
-                if value < 0 or value > 50:
-                    print(f"⚠ Warning: Vibration {value} mm/s is outside typical range (0-50)")
-            elif feature == 'pressure':
-                if value < 0 or value > 500:
-                    print(f"⚠ Warning: Pressure {value} bar is outside typical range (0-500)")
-            elif feature == 'rpm':
-                if value < 0 or value > 10000:
-                    print(f"⚠ Warning: RPM {value} is outside typical range (0-10000)")
-            
-            validated_data[feature] = value
+        # Scale
+        X = np.array([vector])
+        X_scaled = self.scaler.transform(X)
         
-        return validated_data
-    
+        return X_scaled, data['energy_kwh']
+
     def predict_failure_probability(
         self, 
         sensor_data: Dict[str, float],
         return_details: bool = True
     ) -> Dict:
         """
-        Predict failure probability from sensor readings
+        Main prediction pipeline.
         
-        Args:
-            sensor_data: Dictionary with keys: temperature, vibration, pressure, rpm
-            return_details: Whether to include detailed prediction info
-        
-        Returns:
-            Dictionary containing:
-                - failure_predicted: bool (will machine fail?)
-                - failure_probability: float (0-1, probability of failure)
-                - normal_probability: float (0-1, probability of normal operation)
-                - risk_level: str (LOW/MEDIUM/HIGH)
-                - sensor_data: dict (input sensor values)
-                - prediction_time: str (timestamp)
-                - confidence: str (prediction confidence level)
-        
-        Raises:
-            RuntimeError: If model is not loaded
-            ValueError: If input data is invalid
-        
-        Example:
-            >>> predictor = PredictiveMaintenancePredictor()
-            >>> result = predictor.predict_failure_probability({
-            ...     'temperature': 85.0,
-            ...     'vibration': 7.0,
-            ...     'pressure': 120.0,
-            ...     'rpm': 2400.0
-            ... })
-            >>> print(result['risk_level'])
-            MEDIUM
+        Steps:
+        1. Preprocess & Scale Data
+        2. Predict Failure Probability (Classifier)
+        3. Predict Remaining Useful Life (Regressor)
+        4. Analyze Energy Efficiency
         """
-        # Check if model is loaded
-        if not self.model_loaded or self.model is None:
-            raise RuntimeError(
-                "Model not loaded. Please load model first:\n"
-                "  predictor.load_model()"
-            )
-        
-        # Validate input
-        validated_data = self._validate_input(sensor_data)
-        
-        # Prepare input array
-        X = np.array([[
-            validated_data['temperature'],
-            validated_data['vibration'],
-            validated_data['pressure'],
-            validated_data['rpm']
-        ]])
-        
-        # Scale features
-        X_scaled = self.scaler.transform(X)
-        
-        # Predict
-        prediction = self.model.predict(X_scaled)[0]
-        probability = self.model.predict_proba(X_scaled)[0]
-        
-        # Get failure probability (probability of class 1)
-        failure_probability = float(probability[1])
-        normal_probability = float(probability[0])
-        
-        # Determine risk level
-        if failure_probability < settings.LOW_RISK_THRESHOLD:
-            risk_level = "LOW"
-        elif failure_probability < settings.MEDIUM_RISK_THRESHOLD:
-            risk_level = "MEDIUM"
-        else:
-            risk_level = "HIGH"
-        
-        # Calculate confidence (how certain is the prediction?)
-        confidence_score = max(probability)  # Highest probability
-        if confidence_score > 0.9:
-            confidence = "VERY_HIGH"
-        elif confidence_score > 0.75:
-            confidence = "HIGH"
-        elif confidence_score > 0.6:
-            confidence = "MEDIUM"
-        else:
-            confidence = "LOW"
-        
-        # Build result
-        result = {
-            "failure_predicted": bool(prediction),
-            "failure_probability": failure_probability,
-            "normal_probability": normal_probability,
-            "risk_level": risk_level,
-            "sensor_data": validated_data,
-            "prediction_time": datetime.utcnow().isoformat(),
-            "confidence": confidence
-        }
-        
-        # Add detailed information if requested
-        if return_details:
-            result.update({
-                "thresholds": {
-                    "low_risk": settings.LOW_RISK_THRESHOLD,
-                    "medium_risk": settings.MEDIUM_RISK_THRESHOLD,
-                    "high_risk": settings.HIGH_RISK_THRESHOLD
-                },
-                "model_info": {
-                    "type": self.model_metadata.get('model_type', 'Unknown'),
-                    "features_used": self.feature_names
+        if not self.model_loaded:
+            return {"error": "Models not loaded. Please train the model first."}
+
+        try:
+            # 1. Prepare Input
+            X_scaled, energy_val = self._prepare_input(sensor_data)
+            model_type = self.model_metadata.get("model_type", "random_forest")
+
+            # 2. Classifier Prediction
+            if model_type == "lstm":
+                # Reshape for LSTM: [samples, time_steps, features] -> (1, 1, 5)
+                X_lstm = X_scaled.reshape((1, 1, X_scaled.shape[1]))
+                # LSTM returns sigmoid probability directly [[0.85]]
+                fail_prob = float(self.classifier.predict(X_lstm, verbose=0)[0][0])
+            elif model_type == "svm":
+                # SVM predict_proba returns [[prob_0, prob_1]]
+                fail_prob = float(self.classifier.predict_proba(X_scaled)[0][1])
+            else:
+                # Random Forest
+                fail_prob = float(self.classifier.predict_proba(X_scaled)[0][1])
+
+            # 3. RUL Prediction (Always Regressor)
+            rul_days = float(self.regressor.predict(X_scaled)[0])
+            rul_days = max(0.0, rul_days) # Clamp to 0
+
+            # 4. Energy Analysis
+            # Baseline: Theoretical consumption for these settings
+            baseline = self._calculate_energy(sensor_data)
+            energy_status = "Normal"
+            
+            if energy_val > baseline * 1.25:
+                energy_status = "Inefficient (High)"
+            elif energy_val < baseline * 0.75:
+                energy_status = "Abnormal (Low)"
+
+            # 5. Risk Assessment
+            if fail_prob < settings.LOW_RISK_THRESHOLD: # 0.3
+                risk_level = "LOW"
+            elif fail_prob < settings.MEDIUM_RISK_THRESHOLD: # 0.7
+                risk_level = "MEDIUM"
+            else:
+                risk_level = "HIGH"
+
+            result = {
+                "success": True,
+                "failure_predicted": bool(fail_prob > 0.5),
+                "failure_probability": round(fail_prob, 4),
+                "rul_days": round(rul_days, 1),
+                "energy_status": energy_status,
+                "energy_kwh": round(energy_val, 2),
+                "risk_level": risk_level,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+            if return_details:
+                result["model_info"] = {
+                    "type": model_type,
+                    "features": self.feature_names
                 }
-            })
-        
-        return result
-    
-    def batch_predict(
-        self, 
-        sensor_data_list: List[Dict[str, float]],
-        return_details: bool = False
-    ) -> List[Dict]:
-        """
-        Predict for multiple sensor readings (batch prediction)
-        
-        Args:
-            sensor_data_list: List of sensor data dictionaries
-            return_details: Whether to include detailed info for each prediction
-        
-        Returns:
-            List of prediction result dictionaries
-        
-        Example:
-            >>> data_list = [
-            ...     {'temperature': 60, 'vibration': 3, 'pressure': 100, 'rpm': 2000},
-            ...     {'temperature': 85, 'vibration': 7, 'pressure': 120, 'rpm': 2400}
-            ... ]
-            >>> results = predictor.batch_predict(data_list)
-            >>> len(results)
-            2
-        """
-        predictions = []
-        
-        for i, sensor_data in enumerate(sensor_data_list):
-            try:
-                prediction = self.predict_failure_probability(
-                    sensor_data, 
-                    return_details=return_details
-                )
-                prediction['batch_index'] = i
-                predictions.append(prediction)
-            except Exception as e:
-                # Include error in results
-                predictions.append({
-                    'batch_index': i,
-                    'error': str(e),
-                    'sensor_data': sensor_data
-                })
-        
-        return predictions
-    
-    def predict_from_dataframe(
-        self, 
-        df: pd.DataFrame,
-        return_dataframe: bool = True
-    ) -> Union[pd.DataFrame, List[Dict]]:
-        """
-        Predict from pandas DataFrame
-        
-        Args:
-            df: DataFrame with columns: temperature, vibration, pressure, rpm
-            return_dataframe: If True, return DataFrame; if False, return list of dicts
-        
-        Returns:
-            DataFrame or list with predictions
-        
-        Example:
-            >>> df = pd.DataFrame({
-            ...     'temperature': [60, 85],
-            ...     'vibration': [3, 7],
-            ...     'pressure': [100, 120],
-            ...     'rpm': [2000, 2400]
-            ... })
-            >>> results_df = predictor.predict_from_dataframe(df)
-        """
-        # Validate DataFrame has required columns
-        missing_cols = [col for col in self.feature_names if col not in df.columns]
-        if missing_cols:
-            raise ValueError(f"DataFrame missing required columns: {missing_cols}")
-        
-        # Convert to list of dictionaries
-        sensor_data_list = df[self.feature_names].to_dict('records')
-        
-        # Batch predict
-        predictions = self.batch_predict(sensor_data_list, return_details=False)
-        
-        if return_dataframe:
-            # Convert predictions to DataFrame
-            pred_df = pd.DataFrame(predictions)
-            # Combine with original data
-            result_df = pd.concat([df.reset_index(drop=True), pred_df], axis=1)
-            return result_df
-        else:
-            return predictions
-    
-    def get_feature_importance(self) -> Dict[str, float]:
-        """
-        Get feature importance from the model
-        
-        Returns:
-            Dictionary mapping feature names to importance scores
-        
-        Example:
-            >>> importance = predictor.get_feature_importance()
-            >>> print(importance['temperature'])
-            0.35
-        """
-        if not self.model_loaded or self.model is None:
-            raise RuntimeError("Model not loaded")
-        
-        if not hasattr(self.model, 'feature_importances_'):
-            return {feature: None for feature in self.feature_names}
-        
-        importances = self.model.feature_importances_
-        return {
-            feature: float(importance) 
-            for feature, importance in zip(self.feature_names, importances)
-        }
-    
-    def get_model_info(self) -> Dict:
-        """
-        Get comprehensive model information
-        
-        Returns:
-            Dictionary with model metadata and status
-        
-        Example:
-            >>> info = predictor.get_model_info()
-            >>> print(info['model_loaded'])
-            True
-        """
-        info = {
-            "model_loaded": self.model_loaded,
-            "model_path": str(self.model_path),
-            "scaler_path": str(self.scaler_path),
-            "model_exists": self.model_path.exists(),
-            "scaler_exists": self.scaler_path.exists(),
-            "features": self.feature_names,
-            "n_features": len(self.feature_names)
-        }
-        
-        # Add model metadata if loaded
-        if self.model_loaded and self.model_metadata:
-            info.update(self.model_metadata)
-        
-        # Add feature importance if available
-        try:
-            info['feature_importance'] = self.get_feature_importance()
-        except:
-            info['feature_importance'] = None
-        
-        return info
-    
-    def get_prediction_explanation(
-        self, 
-        sensor_data: Dict[str, float]
-    ) -> Dict:
-        """
-        Get detailed explanation of prediction
-        
-        Args:
-            sensor_data: Sensor readings
-        
-        Returns:
-            Dictionary with prediction explanation
-        
-        Example:
-            >>> explanation = predictor.get_prediction_explanation({
-            ...     'temperature': 85, 'vibration': 7, 
-            ...     'pressure': 120, 'rpm': 2400
-            ... })
-            >>> print(explanation['summary'])
-        """
-        # Get prediction
-        prediction = self.predict_failure_probability(sensor_data)
-        
-        # Get feature importance
-        try:
-            feature_importance = self.get_feature_importance()
-        except:
-            feature_importance = None
-        
-        # Analyze which features are out of normal range
-        abnormal_features = []
-        
-        if sensor_data['temperature'] > 85:
-            abnormal_features.append({
-                'feature': 'temperature',
-                'value': sensor_data['temperature'],
-                'status': 'High',
-                'threshold': 85
-            })
-        
-        if sensor_data['vibration'] > 6:
-            abnormal_features.append({
-                'feature': 'vibration',
-                'value': sensor_data['vibration'],
-                'status': 'High',
-                'threshold': 6
-            })
-        
-        if sensor_data['pressure'] > 130:
-            abnormal_features.append({
-                'feature': 'pressure',
-                'value': sensor_data['pressure'],
-                'status': 'High',
-                'threshold': 130
-            })
-        
-        if sensor_data['rpm'] > 2600:
-            abnormal_features.append({
-                'feature': 'rpm',
-                'value': sensor_data['rpm'],
-                'status': 'High',
-                'threshold': 2600
-            })
-        
-        # Generate summary
-        risk_level = prediction['risk_level']
-        prob = prediction['failure_probability']
-        
-        if risk_level == "HIGH":
-            summary = (
-                f"High failure risk detected ({prob:.1%} probability). "
-                f"Machine is operating in dangerous conditions. "
-                f"{len(abnormal_features)} sensor(s) showing abnormal readings."
-            )
-        elif risk_level == "MEDIUM":
-            summary = (
-                f"Moderate failure risk detected ({prob:.1%} probability). "
-                f"Machine showing early warning signs. "
-                f"{len(abnormal_features)} sensor(s) elevated."
-            )
-        else:
-            summary = (
-                f"Low failure risk ({prob:.1%} probability). "
-                f"Machine operating within acceptable parameters."
-            )
-        
-        return {
-            "summary": summary,
-            "prediction": prediction,
-            "abnormal_features": abnormal_features,
-            "feature_importance": feature_importance,
-            "recommendation": self._get_recommendation(risk_level)
-        }
-    
-    def _get_recommendation(self, risk_level: str) -> str:
-        """Get recommendation based on risk level"""
-        recommendations = {
-            "LOW": "Continue normal operation. Maintain regular monitoring schedule.",
-            "MEDIUM": "Schedule preventive maintenance within 24-48 hours. Increase monitoring frequency.",
-            "HIGH": "Immediate action required. Consider emergency shutdown and inspection."
-        }
-        return recommendations.get(risk_level, "Unable to provide recommendation")
-    
-    def save_prediction_log(
-        self, 
-        prediction: Dict, 
-        log_path: Optional[Path] = None
-    ):
-        """
-        Save prediction to log file
-        
-        Args:
-            prediction: Prediction result dictionary
-            log_path: Path to log file (default: logs/predictions.jsonl)
-        """
-        if log_path is None:
-            log_path = Path("logs/predictions.jsonl")
-        
-        # Ensure log directory exists
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Append prediction to log file (JSONL format)
-        with open(log_path, 'a') as f:
-            f.write(json.dumps(prediction) + '\n')
-    
-    def reload_model(self) -> bool:
-        """
-        Reload model from disk (useful if model has been retrained)
-        
-        Returns:
-            bool: True if successful
-        """
-        print("Reloading model...")
-        return self.load_model()
 
+            return result
 
-# ==============================================================================
-# Testing and Demo Functions
-# ==============================================================================
-
-def demo_predictions():
-    """Run demo predictions with sample data"""
-    print("\n" + "="*70)
-    print("PREDICTIVE MAINTENANCE PREDICTOR - DEMO")
-    print("="*70)
-    
-    # Initialize predictor
-    try:
-        predictor = PredictiveMaintenancePredictor()
-    except FileNotFoundError as e:
-        print(f"\n✗ Error: {e}")
-        return
-    
-    # Test cases
-    test_cases = [
-        {
-            "name": "Normal Operation",
-            "data": {"temperature": 60, "vibration": 3, "pressure": 100, "rpm": 2000}
-        },
-        {
-            "name": "Slightly Elevated",
-            "data": {"temperature": 75, "vibration": 4.5, "pressure": 110, "rpm": 2200}
-        },
-        {
-            "name": "High Temperature",
-            "data": {"temperature": 90, "vibration": 3, "pressure": 100, "rpm": 2000}
-        },
-        {
-            "name": "High Vibration",
-            "data": {"temperature": 60, "vibration": 8, "pressure": 100, "rpm": 2000}
-        },
-        {
-            "name": "Critical - Multiple Anomalies",
-            "data": {"temperature": 95, "vibration": 9, "pressure": 140, "rpm": 2800}
-        }
-    ]
-    
-    print("\nRunning test predictions...\n")
-    
-    for i, test in enumerate(test_cases, 1):
-        print(f"{i}. {test['name']}")
-        print(f"   Input: {test['data']}")
-        
-        try:
-            result = predictor.predict_failure_probability(test['data'])
-            print(f"   → Failure Probability: {result['failure_probability']:.2%}")
-            print(f"   → Risk Level: {result['risk_level']}")
-            print(f"   → Confidence: {result['confidence']}")
-            print(f"   → Predicted Failure: {result['failure_predicted']}")
         except Exception as e:
-            print(f"   ✗ Error: {e}")
-        
-        print()
-    
-    # Model info
-    print("="*70)
-    print("MODEL INFORMATION")
-    print("="*70)
-    info = predictor.get_model_info()
-    print(f"Model Type: {info.get('model_type', 'N/A')}")
-    print(f"Features: {', '.join(info['features'])}")
-    print(f"N Estimators: {info.get('n_estimators', 'N/A')}")
-    print(f"Max Depth: {info.get('max_depth', 'N/A')}")
-    
-    # Feature importance
-    if info.get('feature_importance'):
-        print("\nFeature Importance:")
-        for feature, importance in info['feature_importance'].items():
-            if importance is not None:
-                print(f"  {feature:12s}: {importance:.4f}")
-    
-    print("="*70)
+            print(f"Prediction Error: {e}")
+            return {"success": False, "error": str(e)}
 
+    def get_prediction_explanation(self, sensor_data: Dict[str, float]) -> Dict:
+        """
+        Generate Explainable AI (XAI) report.
+        Identifies which sensors are contributing most to the risk.
+        """
+        # Get base prediction
+        pred = self.predict_failure_probability(sensor_data)
+        if not pred.get("success"):
+            return pred
+
+        contributors = []
+        
+        # Define simplistic normal operating thresholds for explanation
+        # In a real app, these should come from statistical analysis of training data
+        thresholds = {
+            'temperature': {'limit': 80, 'msg': 'Overheating'},
+            'vibration': {'limit': 6, 'msg': 'Excessive Vibration'},
+            'pressure': {'limit': 130, 'msg': 'High Pressure'},
+            'rpm': {'limit': 2800, 'msg': 'Overspeed'},
+            'energy_kwh': {'limit': 150, 'msg': 'Power Spike'}
+        }
+
+        # Check sensors against thresholds
+        for feature, val in sensor_data.items():
+            if feature in thresholds:
+                limit = thresholds[feature]['limit']
+                if val > limit:
+                    contributors.append({
+                        "feature": feature,
+                        "value": val,
+                        "reason": f"{thresholds[feature]['msg']} (> {limit})"
+                    })
+
+        # Add Energy Context
+        if pred['energy_status'] != "Normal":
+            contributors.append({
+                "feature": "energy_efficiency",
+                "value": pred['energy_kwh'],
+                "reason": pred['energy_status']
+            })
+
+        # Feature Importance (Only for Random Forest)
+        feature_importance = {}
+        model_type = self.model_metadata.get("model_type", "random_forest")
+        
+        if model_type == "random_forest" and hasattr(self.classifier, "feature_importances_"):
+            importances = self.classifier.feature_importances_
+            feature_importance = dict(zip(self.feature_names, [round(x, 3) for x in importances]))
+
+        return {
+            "prediction_summary": pred,
+            "contributors": contributors,
+            "feature_importance": feature_importance,
+            "analysis_text": f"Machine risk is {pred['risk_level']} with {pred['rul_days']} days RUL. " 
+                             f"Detected {len(contributors)} anomalies."
+        }
+
+    def batch_predict(self, sensor_data_list: List[Dict[str, float]]) -> List[Dict]:
+        """Process a list of sensor data points efficiently."""
+        results = []
+        for i, data in enumerate(sensor_data_list):
+            res = self.predict_failure_probability(data, return_details=False)
+            res['index'] = i
+            results.append(res)
+        return results
+
+    def get_model_info(self) -> Dict:
+        """Return current model status."""
+        return {
+            "loaded": self.model_loaded,
+            "directory": str(self.model_dir),
+            "metadata": self.model_metadata
+        }
 
 if __name__ == "__main__":
-    demo_predictions()
+    # Test Block
+    predictor = PredictiveMaintenancePredictor()
+    
+    test_data = {
+        "temperature": 82.5,
+        "vibration": 4.1,
+        "pressure": 105.0,
+        "rpm": 2100.0
+        # energy_kwh will be auto-calculated
+    }
+    
+    print("\n--- Test Prediction ---")
+    result = predictor.predict_failure_probability(test_data)
+    print(json.dumps(result, indent=2))
+    
+    print("\n--- Test Explanation ---")
+    explanation = predictor.get_prediction_explanation(test_data)
+    print(json.dumps(explanation, indent=2))

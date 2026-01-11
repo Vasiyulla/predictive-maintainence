@@ -315,6 +315,31 @@ async def get_agents_status(user=Depends(verify_token)):
             detail="Agent service unavailable"
         )
 
+# --- Add these routes to your API Gateway main.py ---
+
+@app.get("/api/machines")
+async def proxy_get_machines(user=Depends(verify_token)):
+    """Forward GET request to Auth Service"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{AUTH_SERVICE_URL}/machines")
+            return response.json()
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
+
+@app.post("/api/machines")
+async def proxy_add_machine(machine_data: dict, user=Depends(verify_token)):
+    """Forward POST request to Auth Service"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{AUTH_SERVICE_URL}/machines", json=machine_data)
+            return response.json()
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

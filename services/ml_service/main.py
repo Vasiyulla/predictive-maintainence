@@ -53,6 +53,13 @@ class SensorData(BaseModel):
     pressure: float = Field(..., ge=0, le=300, description="Pressure in bar")
     rpm: float = Field(..., ge=0, le=5000, description="RPM")
 
+    # ... [Imports] ...
+class TrainingRequest(BaseModel):
+    """Schema for training request"""
+    n_samples: int = Field(default=10000, ge=1000, le=100000)
+    regenerate_data: bool = Field(default=False)
+    model_type: str = Field(default="random_forest", description="Algorithm: random_forest, svm, or lstm")
+
 class PredictionResponse(BaseModel):
     """Schema for prediction response"""
     failure_predicted: bool
@@ -172,6 +179,44 @@ async def train_model(
         "n_samples": request.n_samples
     }
 
+# ... [Inside train_model endpoint] ...
+@app.post("/train")
+async def train_model(
+    request: TrainingRequest,
+    background_tasks: BackgroundTasks
+):
+    """Train or retrain the ML model with selected algorithm"""
+    def training_task():
+        global predictor
+        try:
+            # ... [Path setup] ...
+            
+            # Train model with selected type
+            trainer = PredictiveMaintenanceTrainer()
+            metrics = trainer.full_training_pipeline(
+                data_path, 
+                model_path, 
+                scaler_path, 
+                model_type=request.model_type # Pass model type
+            )
+            
+            # Reload predictor
+            if predictor:
+                predictor.reload_model()
+            
+            print("✓ Training completed successfully")
+            return metrics
+            
+        except Exception as e:
+            # ... [Error handling] ...
+            pass
+    
+    background_tasks.add_task(training_task)
+    return {
+        "status": "training_started",
+        "algorithm": request.model_type,
+        "n_samples": request.n_samples
+    }
 @app.get("/training/status")
 async def get_training_status():
     """Get current training status"""
@@ -191,3 +236,4 @@ if __name__ == "__main__":
         port=settings.ML_SERVICE_PORT,
         log_level=settings.LOG_LEVEL.lower()
     )
+

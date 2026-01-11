@@ -1,11 +1,11 @@
 """
 Authentication Service - Database Models
-Defines User model and Pydantic schemas for API validation
+Defines User model, Machine model, and Pydantic schemas for API validation
 """
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, JSON, ForeignKey
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field, validator
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from .database import Base
 
 # ==============================================================================
@@ -18,7 +18,7 @@ class User(Base):
     Represents a user in the system with authentication details
     """
     __tablename__ = "users"
-    __table_args__ = {"extend_existing": True}  # ✅ ADD THIS
+    __table_args__ = {"extend_existing": True}
     
     # Primary key
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
@@ -31,7 +31,7 @@ class User(Base):
     # User role and status
     role = Column(String(20), default="operator", nullable=False)  # operator, admin
     is_active = Column(Boolean, default=True, nullable=False)
-    is_verified = Column(Boolean, default=False, nullable=False)  # ✅ FIX
+    is_verified = Column(Boolean, default=False, nullable=False)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -52,6 +52,39 @@ class User(Base):
             'last_login': self.last_login.isoformat() if self.last_login else None
         }
 
+class Machine(Base):
+    """
+    Machine database model
+    Stores machine configuration, active features, and ML settings
+    """
+    __tablename__ = "machines"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(100), unique=True, index=True, nullable=False)
+    type = Column(String(50), nullable=False)
+    location = Column(String(100), nullable=True)
+    
+    # Store selected features as a JSON list (e.g., ["temperature", "vibration"])
+    features = Column(JSON, nullable=False)
+    
+    # Store machine-specific settings (e.g., {"transfer_learning_source": "CNC-01"})
+    settings = Column(JSON, nullable=True)
+    
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'type': self.type,
+            'location': self.location,
+            'features': self.features,
+            'settings': self.settings,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat()
+        }
 
 # ==============================================================================
 # Pydantic Schemas (API Request/Response Models)
@@ -100,20 +133,7 @@ class UserCreate(UserBase):
         """Validate password strength"""
         if len(v) < 6:
             raise ValueError('Password must be at least 6 characters long')
-        if v.isalnum() and v.isalpha():
-            # Encourage but don't require special characters
-            pass
         return v
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "username": "john_doe",
-                "email": "john@example.com",
-                "password": "secure_password_123",
-                "role": "operator"
-            }
-        }
 
 
 class UserUpdate(BaseModel):
@@ -125,32 +145,15 @@ class UserUpdate(BaseModel):
     
     @validator('role')
     def validate_role(cls, v):
-        """Validate role if provided"""
         if v is not None and v not in ['operator', 'admin']:
             raise ValueError('Role must be either "operator" or "admin"')
         return v
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "email": "newemail@example.com",
-                "role": "admin"
-            }
-        }
 
 
 class UserLogin(BaseModel):
     """Schema for user login"""
     username: str = Field(..., description="Username")
     password: str = Field(..., description="Password")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "username": "john_doe",
-                "password": "secure_password_123"
-            }
-        }
 
 
 class UserResponse(BaseModel):
@@ -166,17 +169,6 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True  # Pydantic v2
         orm_mode = True  # Pydantic v1 compatibility
-        schema_extra = {
-            "example": {
-                "id": 1,
-                "username": "john_doe",
-                "email": "john@example.com",
-                "role": "operator",
-                "is_active": True,
-                "created_at": "2024-01-01T00:00:00",
-                "last_login": "2024-01-02T10:30:00"
-            }
-        }
 
 
 class Token(BaseModel):
@@ -184,23 +176,6 @@ class Token(BaseModel):
     access_token: str = Field(..., description="JWT access token")
     token_type: str = Field(default="bearer", description="Token type")
     user: UserResponse = Field(..., description="User information")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                "token_type": "bearer",
-                "user": {
-                    "id": 1,
-                    "username": "john_doe",
-                    "email": "john@example.com",
-                    "role": "operator",
-                    "is_active": True,
-                    "created_at": "2024-01-01T00:00:00",
-                    "last_login": "2024-01-02T10:30:00"
-                }
-            }
-        }
 
 
 class TokenData(BaseModel):
@@ -209,28 +184,11 @@ class TokenData(BaseModel):
     user_id: Optional[int] = None
     role: Optional[str] = None
     exp: Optional[datetime] = None
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "username": "john_doe",
-                "user_id": 1,
-                "role": "operator",
-                "exp": "2024-01-03T10:30:00"
-            }
-        }
 
 
 class TokenVerifyRequest(BaseModel):
     """Schema for token verification request"""
     token: str = Field(..., description="JWT token to verify")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-            }
-        }
 
 
 class TokenVerifyResponse(BaseModel):
@@ -238,80 +196,43 @@ class TokenVerifyResponse(BaseModel):
     valid: bool = Field(..., description="Whether token is valid")
     user: Optional[UserResponse] = Field(None, description="User information if valid")
     message: Optional[str] = Field(None, description="Error message if invalid")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "valid": True,
-                "user": {
-                    "id": 1,
-                    "username": "john_doe",
-                    "email": "john@example.com",
-                    "role": "operator",
-                    "is_active": True,
-                    "created_at": "2024-01-01T00:00:00",
-                    "last_login": "2024-01-02T10:30:00"
-                }
-            }
-        }
 
 
 class UserListResponse(BaseModel):
     """Schema for listing multiple users"""
     total: int = Field(..., description="Total number of users")
     users: list[UserResponse] = Field(..., description="List of users")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "total": 2,
-                "users": [
-                    {
-                        "id": 1,
-                        "username": "admin",
-                        "email": "admin@example.com",
-                        "role": "admin",
-                        "is_active": True,
-                        "created_at": "2024-01-01T00:00:00",
-                        "last_login": "2024-01-02T10:30:00"
-                    },
-                    {
-                        "id": 2,
-                        "username": "operator",
-                        "email": "operator@example.com",
-                        "role": "operator",
-                        "is_active": True,
-                        "created_at": "2024-01-01T00:00:00",
-                        "last_login": None
-                    }
-                ]
-            }
-        }
 
 
 class MessageResponse(BaseModel):
     """Generic message response"""
     message: str = Field(..., description="Response message")
     detail: Optional[str] = Field(None, description="Additional details")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "message": "Operation successful",
-                "detail": "User updated successfully"
-            }
-        }
 
 
 class ErrorResponse(BaseModel):
     """Error response schema"""
     error: str = Field(..., description="Error type")
     detail: str = Field(..., description="Error details")
+
+# ==============================================================================
+# Machine Schemas
+# ==============================================================================
+
+class MachineCreate(BaseModel):
+    """Schema for adding a new machine"""
+    name: str = Field(..., min_length=2, max_length=100, description="Machine Name or ID")
+    type: str = Field(..., min_length=2, max_length=50, description="Machine Type (e.g., CNC, Rotary)")
+    location: Optional[str] = Field(None, description="Physical location")
+    features: List[str] = Field(..., min_items=1, description="List of active sensors/features")
+    settings: Optional[Dict[str, Any]] = Field(None, description="Additional settings like transfer learning source")
+
+class MachineResponse(MachineCreate):
+    """Schema for machine response"""
+    id: int
+    is_active: bool
+    created_at: datetime
     
     class Config:
-        schema_extra = {
-            "example": {
-                "error": "ValidationError",
-                "detail": "Username already exists"
-            }
-        }
+        from_attributes = True
+        orm_mode = True

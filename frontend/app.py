@@ -5,6 +5,7 @@ Enterprise AI Predictive Maintenance Platform
 import sys
 from pathlib import Path
 
+# Add project root to path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
@@ -13,6 +14,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 import time
+import requests  # Added for direct API calls for new features
 
 from utils.api_client import APIClient
 from config.settings import settings
@@ -255,13 +257,18 @@ def show_monitoring_page():
     """Display real-time monitoring interface"""
     st.header("Real-Time Machine Monitoring")
     
+    # Fetch machines from backend
+    machine_list = st.session_state.api_client.get_machines()
+    
+    # Fallback to defaults if list is empty
+    if not machine_list:
+        machine_list = ["Machine-001", "Machine-002", "Machine-003", "Machine-004"]
     # Machine selection
     col1, col2 = st.columns([2, 1])
     
     with col1:
         machine_id = st.selectbox(
-            "Select Machine",
-            ["Machine-001", "Machine-002", "Machine-003", "Machine-004"]
+            "Select Machine",options=machine_list
         )
     
     with col2:
@@ -593,43 +600,162 @@ def show_analysis_page():
             st.error(f"Prediction failed: {result.get('error')}")
 
 def show_settings_page():
-    """System settings page"""
+    """System settings page with Admin options"""
     st.header("⚙️ System Settings")
     
-    tab1, tab2 = st.tabs(["ML Model", "System Info"])
+    # Determine if user is admin
+    user_role = st.session_state.user.get("role") if st.session_state.user else "operator"
+    is_admin = user_role == "admin"
     
-    with tab1:
+    # Create tabs based on role
+    tabs = ["ML Model", "System Info"]
+    if is_admin:
+        tabs.insert(0, "Machine Management")
+        
+    current_tabs = st.tabs(tabs)
+    
+    # === ADMIN: MACHINE MANAGEMENT TAB ===
+    if is_admin:
+        with current_tabs[0]:
+            st.subheader("🏭 Machine Management")
+            st.info("Admin Console: Add and configure industrial machinery.")
+            
+            with st.expander("➕ Add New Machine", expanded=True):
+                with st.form("add_machine_form"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        m_name = st.text_input("Machine Name (ID)", placeholder="e.g., Turbine-X99")
+                        m_type = st.selectbox("Machine Type", ["Rotary", "Hydraulic", "CNC", "Generic", "Conveyor"])
+                    
+                    with col2:
+                        m_loc = st.text_input("Location", placeholder="e.g., Floor 2, Zone A")
+                        m_status = st.selectbox("Initial Status", ["Active", "Maintenance", "Offline"])
+                    
+                    st.markdown("#### Select Monitoring Sensors (Features)")
+                    c1, c2, c3, c4 = st.columns(4)
+                    f_temp = c1.checkbox("Temperature", value=True)
+                    f_vib = c2.checkbox("Vibration", value=True)
+                    f_press = c3.checkbox("Pressure", value=True)
+                    f_rpm = c4.checkbox("RPM", value=True)
+                    
+                    submitted = st.form_submit_button("Add Machine", type="primary", use_container_width=True)
+                    
+                    if submitted:
+                        # Collect features
+                        features = []
+                        if f_temp: features.append("temperature")
+                        if f_vib: features.append("vibration")
+                        if f_press: features.append("pressure")
+                        if f_rpm: features.append("rpm")
+                        
+                        if not m_name:
+                            st.error("Machine Name is required.")
+                        elif not features:
+                            st.error("At least one feature must be selected.")
+                        else:
+                            # Mock API Call (Replace with st.session_state.api_client.add_machine in production)
+                            # Assuming backend endpoint: /api/machines
+                            machine_payload = {
+                                "name": m_name,
+                                "type": m_type,
+                                "location": m_loc,
+                                "features": features,
+                                "is_active": m_status == "Active"
+                            }
+                            # Perform the actual API call
+                            result = st.session_state.api_client.add_machine(machine_payload)
+                            
+                            if result.get("success"):
+                                st.success(f"✅ Machine '{m_name}' added!")
+                                st.rerun() # <--- Crucial: This refreshes the app so the dropdown updates
+                            else:
+                                st.error(f"Failed: {result.get('error')}")
+                            
+    # === ML MODEL TAB ===
+    # Calculate index for ML Model tab
+    ml_tab_idx = 1 if is_admin else 0
+    
+    with current_tabs[ml_tab_idx]:
         st.subheader("Model Management")
         
         model_info = st.session_state.api_client.get_model_info()
         
-        if model_info.get("model_loaded"):
-            st.success("Current model is loaded and operational")
-        else:
-            st.warning("No model loaded - training required")
-        
+        # Display Model Status
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if model_info.get("model_loaded"):
+                st.success("✅ Model Loaded")
+            else:
+                st.error("❌ No Model Loaded")
+        with col2:
+            st.metric("Model Type", model_info.get("model_type", "Unknown").replace("_", " ").title())
+        with col3:
+            st.metric("Features", len(model_info.get("features", [])))
+
         st.markdown("---")
         
         st.subheader("Train New Model")
-        n_samples = st.number_input(
-            "Number of training samples",
-            min_value=1000,
-            max_value=100000,
-            value=10000,
-            step=1000
-        )
+        st.warning("Training a new model will replace the current one in production.")
         
-        if st.button("Start Training", type="primary"):
-            with st.spinner("Training in progress..."):
-                result = st.session_state.api_client.train_model(n_samples)
-                
-                if "error" not in result:
-                    st.success("Training started! This will take a few minutes.")
-                    st.info("The model will be available once training completes.")
-                else:
-                    st.error(f"Training failed: {result['error']}")
-    
-    with tab2:
+        col1, col2 = st.columns(2)
+        with col1:
+            n_samples = st.number_input(
+                "Number of training samples",
+                min_value=1000,
+                max_value=100000,
+                value=10000,
+                step=1000,
+                help="Amount of synthetic data to generate for training"
+            )
+        
+        with col2:
+            # New Feature: Algorithm Selection
+            model_algo = st.selectbox(
+                "Training Algorithm",
+                ["Random Forest", "Support Vector Machine (SVM)", "LSTM (Deep Learning)"],
+                index=0,
+                help="Select the machine learning algorithm to use."
+            )
+
+        if st.button("Start Training", type="primary", use_container_width=True):
+            # Map selection to internal IDs
+            algo_map = {
+                "Random Forest": "random_forest",
+                "Support Vector Machine (SVM)": "svm",
+                "LSTM (Deep Learning)": "lstm"
+            }
+            selected_id = algo_map[model_algo]
+            
+            with st.spinner(f"Initiating training with {model_algo}..."):
+                # Using direct requests to ensure new parameters are sent correctly
+                # (Bypassing api_client wrapper for this specific new feature)
+                try:
+                    # Construct URL (assuming standard gateway port if not imported)
+                    # We use settings from imports
+                    url = f"http://{settings.ML_SERVICE_HOST}:{settings.ML_SERVICE_PORT}/train"
+                    
+                    payload = {
+                        "n_samples": int(n_samples),
+                        "regenerate_data": True,
+                        "model_type": selected_id
+                    }
+                    
+                    response = requests.post(url, json=payload, timeout=5)
+                    
+                    if response.status_code == 200:
+                        st.success("Training started successfully! This process runs in the background.")
+                        st.info("The model status will update automatically once training completes.")
+                        st.json(response.json())
+                    else:
+                        st.error(f"Training failed: {response.text}")
+                        
+                except Exception as e:
+                    st.error(f"Connection error: {e}")
+                    st.info("Ensure the ML Service is running.")
+
+    # === SYSTEM INFO TAB ===
+    sys_tab_idx = 2 if is_admin else 1
+    with current_tabs[sys_tab_idx]:
         st.subheader("System Information")
         
         col1, col2 = st.columns(2)

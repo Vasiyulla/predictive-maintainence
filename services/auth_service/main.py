@@ -10,7 +10,7 @@ from datetime import timedelta
 
 from config.settings import settings
 from .database import get_db, init_db
-from .models import UserCreate, UserLogin, UserResponse, Token
+from .models import UserCreate, UserLogin, UserResponse, Token, Machine, MachineCreate, MachineResponse
 from .auth import (
     authenticate_user,
     create_access_token,
@@ -126,7 +126,30 @@ async def verify_user_token(token: str, db: Session = Depends(get_db)):
         "valid": True,
         "user": UserResponse.from_orm(user)
     }
+@app.post("/machines", response_model=MachineResponse, status_code=201)
+async def create_machine(machine: MachineCreate, db: Session = Depends(get_db)):
+    """Add a new machine"""
+    existing = db.query(Machine).filter(Machine.name == machine.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Machine already exists")
+    
+    new_machine = Machine(
+        name=machine.name,
+        type=machine.type,
+        location=machine.location,
+        features=machine.features,
+        settings=machine.settings,
+        is_active=True
+    )
+    db.add(new_machine)
+    db.commit()
+    db.refresh(new_machine)
+    return new_machine
 
+@app.get("/machines", response_model=List[MachineResponse])
+async def get_machines(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """Get all active machines"""
+    return db.query(Machine).filter(Machine.is_active == True).offset(skip).limit(limit).all()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -135,3 +158,5 @@ if __name__ == "__main__":
         port=settings.AUTH_SERVICE_PORT,
         log_level=settings.LOG_LEVEL.lower()
     )
+# ... [Existing Auth Routes] ...
+
