@@ -166,10 +166,15 @@ async def add_machine_proxy(machine_data: dict, user=Depends(verify_token)):
 @router.get("/api/machines")
 async def get_machines_proxy(user=Depends(verify_token)):
     if not user: raise HTTPException(status_code=401)
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{AUTH_SERVICE_URL}/machines")
-        return response.json()
-
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AUTH_SERVICE_URL}/machines")
+            if response.status_code != 200:
+                print(f"Auth Service Error: {response.text}")
+            return response.json()
+    except Exception as e:
+        print(f"Gateway connection error: {e}")
+        return []
 # -----------------------------
 # ML ROUTES
 # -----------------------------
@@ -264,3 +269,29 @@ async def agents_status(user=Depends(verify_token)):
             return response.json()
     except httpx.RequestError:
         raise HTTPException(status_code=503, detail="Agent service unavailable")
+
+# -----------------------------
+# TELEMETRY ROUTES (Add these)
+# -----------------------------
+# Add this to services/api_gateway/routes.py
+# -----------------------------
+# TELEMETRY ROUTES
+# -----------------------------
+@router.post("/api/telemetry")
+async def add_telemetry_proxy(data: dict, user=Depends(verify_token)):
+    """Forward hardware data to Auth Service"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    async with httpx.AsyncClient() as client:
+        # Forwards to Auth Service (Port 8001)
+        response = await client.post(f"{AUTH_SERVICE_URL}/telemetry", json=data)
+        return response.json()
+
+@router.get("/api/telemetry/latest/{machine_name}")
+async def get_latest_telemetry_proxy(machine_name: str, user=Depends(verify_token)):
+    """Fetch latest reading for the Dashboard"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{AUTH_SERVICE_URL}/telemetry/latest/{machine_name}")
+        return response.json()

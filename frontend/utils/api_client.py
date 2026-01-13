@@ -202,3 +202,20 @@ class APIClient:
             return response.json()
         except:
             return {"error": "Agent service unavailable"}
+    # frontend/utils/api_client.py
+
+    def get_latest_telemetry(self, machine_name: str) -> dict:
+        """Fetch the most recent sensor data for a machine"""
+        if not self.token:
+            return {"success": False, "error": "No token"}
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/telemetry/latest/{machine_name}", 
+                headers=self._get_headers(),
+                timeout=10
+            )
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            return {"success": False, "error": "No data found"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}

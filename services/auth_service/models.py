@@ -2,7 +2,7 @@
 Authentication Service - Database Models
 Defines User model, Machine model, and Pydantic schemas for API validation
 """
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, JSON, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, JSON, ForeignKey, Float
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Dict, Any
@@ -236,3 +236,25 @@ class MachineResponse(MachineCreate):
     class Config:
         from_attributes = True
         orm_mode = True
+
+# services/auth_service/models.py
+
+class Telemetry(Base):
+    """Stores time-series sensor data from machines"""
+    __tablename__ = "telemetry"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    machine_name = Column(String, index=True)
+    temperature = Column(Float)
+    vibration = Column(Float)
+    pressure = Column(Float)
+    rpm = Column(Float)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+# Pydantic schema for ingestion
+class TelemetryCreate(BaseModel):
+    machine_name: str
+    temperature: float
+    vibration: float
+    pressure: float
+    rpm: float

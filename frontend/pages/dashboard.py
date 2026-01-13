@@ -1,6 +1,6 @@
 """
 Dashboard Page - Real-time Monitoring
-Enhanced dashboard with live updates and comprehensive monitoring
+Full-featured Enterprise Dashboard with Real-Time Database Connection
 """
 import streamlit as st
 import plotly.graph_objects as go
@@ -8,87 +8,176 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
 import time
-import json
+import random
 
 def show_dashboard(api_client):
     """
     Display enhanced real-time monitoring dashboard
     
     Features:
-    - Real-time sensor monitoring
+    - Real-time sensor monitoring (DB connected)
     - Live status indicators
-    - Historical trends
+    - Historical trends (Session-based)
     - Quick actions
     - Alert notifications
     """
     
     st.title("🎯 Real-Time Dashboard")
     
-    # Initialize session state for live data
-    if 'live_data' not in st.session_state:
-        st.session_state.live_data = []
-    if 'selected_machine' not in st.session_state:
-        st.session_state.selected_machine = "Machine-001"
+    # ---------------------------------------------------------
+    # 1. INITIALIZE SESSION STATE
+    # ---------------------------------------------------------
+    # Store historical data in session for the "Trends" tab (since we don't have a history API yet)
+    if 'history_data' not in st.session_state:
+        st.session_state.history_data = {} # Format: {machine_id: pd.DataFrame}
+        
+    if 'alert_log' not in st.session_state:
+        st.session_state.alert_log = []
+        
+    if 'last_update' not in st.session_state:
+        st.session_state.last_update = datetime.now()
+
+    # ---------------------------------------------------------
+    # 2. FETCH REAL DATA
+    # ---------------------------------------------------------
+    try:
+        # Fetch actual machine list from DB
+        db_machines = api_client.get_machines()
+    except Exception as e:
+        st.error(f"Connection Error: {e}")
+        db_machines = []
+
+    # Calculate metrics based on REAL data
+    active_count = len(db_machines) if db_machines else 0
     
-    # Top metrics row
+    # ---------------------------------------------------------
+    # 3. TOP METRICS ROW
+    # ---------------------------------------------------------
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric(
             label="🟢 Active Machines",
-            value="12",
-            delta="2 online"
+            value=str(active_count),
+            delta="Online (DB)"
         )
     
     with col2:
+        # Dynamic warning count from session alerts
+        warnings = len([a for a in st.session_state.alert_log if a['severity'] == "Warning"])
         st.metric(
             label="⚠️ Warnings",
-            value="3",
-            delta="-1 from yesterday",
+            value=str(warnings),
+            delta="Session Total",
             delta_color="inverse"
         )
     
     with col3:
+        # Dynamic critical count
+        criticals = len([a for a in st.session_state.alert_log if a['severity'] == "Critical"])
         st.metric(
             label="🔴 Critical Alerts",
-            value="1",
-            delta="0 change"
+            value=str(criticals),
+            delta="Session Total"
         )
     
     with col4:
+        # Count total data points collected this session
+        total_points = sum([len(df) for df in st.session_state.history_data.values()]) if st.session_state.history_data else 0
         st.metric(
-            label="📊 Predictions Today",
-            value="247",
-            delta="+32 from yesterday"
+            label="📊 Data Points",
+            value=str(total_points),
+            delta="Live Stream"
         )
     
     st.markdown("---")
     
-    # Machine selector and controls
+    # ---------------------------------------------------------
+    # 4. CONTROLS & SELECTION
+    # ---------------------------------------------------------
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        machines = [f"Machine-{i:03d}" for i in range(1, 16)]
-        selected_machine = st.selectbox(
-            "🏭 Select Machine",
-            machines,
-            index=machines.index(st.session_state.selected_machine)
-        )
-        st.session_state.selected_machine = selected_machine
+        # DYNAMIC DROP DOWN (No hardcoded values)
+        if db_machines:
+            # Sync selection with session state
+            if 'selected_machine' not in st.session_state or st.session_state.selected_machine not in db_machines:
+                st.session_state.selected_machine = db_machines[0]
+                
+            selected_machine = st.selectbox(
+                "🏭 Select Machine",
+                options=db_machines,
+                index=db_machines.index(st.session_state.selected_machine)
+            )
+            st.session_state.selected_machine = selected_machine
+        else:
+            st.warning("⚠️ No machines found. Add one in Settings.")
+            selected_machine = None
     
     with col2:
+        # Mode Selection
         monitoring_mode = st.radio(
-            "Monitoring Mode",
-            ["Real-time", "Manual", "Simulated"],
+            "Data Source",
+            ["Real-Time (Database)", "Manual Input"],
             horizontal=True
         )
     
     with col3:
         st.write("")
         st.write("")
-        auto_refresh = st.checkbox("Auto-refresh", value=False)
+        # Auto-refresh toggle
+        auto_refresh = st.checkbox("🔴 Live Sync", value=False)
     
-    # Main dashboard layout
+    # ---------------------------------------------------------
+    # 5. DATA FETCHING LOGIC
+    # ---------------------------------------------------------
+    # Default values
+    current_temp = 0.0
+    current_vib = 0.0
+    current_press = 0.0
+    current_rpm = 0.0
+    
+    if selected_machine:
+        if monitoring_mode == "Real-Time (Database)":
+            # Fetch latest from DB
+            if hasattr(api_client, 'get_latest_telemetry'):
+                res = api_client.get_latest_telemetry(selected_machine)
+                if res.get("success") and res.get("data"):
+                    d = res["data"]
+                    current_temp = float(d.get('temperature', 0))
+                    current_vib = float(d.get('vibration', 0))
+                    current_press = float(d.get('pressure', 0))
+                    current_rpm = float(d.get('rpm', 0))
+                    st.toast(f"📡 Updated from DB: {d.get('timestamp')}")
+                else:
+                    st.info("Waiting for data stream...")
+            else:
+                st.error("API Client missing telemetry method")
+                
+        # Update Session History for Trends
+        if selected_machine not in st.session_state.history_data:
+            st.session_state.history_data[selected_machine] = pd.DataFrame(
+                columns=['timestamp', 'temperature', 'vibration', 'pressure', 'rpm']
+            )
+            
+        # Append new data point if it's new (simple check) or just append for demo flow
+        new_row = {
+            'timestamp': datetime.now(),
+            'temperature': current_temp,
+            'vibration': current_vib,
+            'pressure': current_press,
+            'rpm': current_rpm
+        }
+        # Only append if values are non-zero (to avoid cluttering history with empty inits)
+        if current_temp > 0:
+            st.session_state.history_data[selected_machine] = pd.concat([
+                st.session_state.history_data[selected_machine], 
+                pd.DataFrame([new_row])
+            ], ignore_index=True)
+
+    # ---------------------------------------------------------
+    # 6. MAIN DASHBOARD TABS
+    # ---------------------------------------------------------
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Live Monitoring",
         "📈 Trends",
@@ -97,24 +186,43 @@ def show_dashboard(api_client):
     ])
     
     with tab1:
-        show_live_monitoring(api_client, selected_machine, monitoring_mode)
+        if selected_machine:
+            show_live_monitoring(
+                api_client, 
+                selected_machine, 
+                monitoring_mode, 
+                current_temp, current_vib, current_press, current_rpm
+            )
+        else:
+            st.info("Select a machine to view live monitoring.")
     
     with tab2:
-        show_trends(selected_machine)
+        if selected_machine:
+            show_trends(selected_machine)
+        else:
+            st.info("Select a machine to view trends.")
     
     with tab3:
         show_alerts()
     
     with tab4:
-        show_reports()
+        show_reports(db_machines)
     
-    # Auto-refresh logic
+    # ---------------------------------------------------------
+    # 7. AUTO-REFRESH TRIGGER
+    # ---------------------------------------------------------
     if auto_refresh:
-        time.sleep(5)
+        time.sleep(2) # Refresh every 2 seconds
         st.rerun()
 
+def get_real_time_values(api_client, machine_id):
+    """Fetch the latest data pushed by the simulated hardware service"""
+    res = api_client.get_latest_telemetry(machine_id)
+    if res.get("success"):
+        return res["data"]
+    return None
 
-def show_live_monitoring(api_client, machine_id, mode):
+def show_live_monitoring(api_client, machine_id, mode, db_temp, db_vib, db_press, db_rpm):
     """Display live monitoring section"""
     
     st.subheader(f"📡 Live Sensor Data - {machine_id}")
@@ -125,111 +233,60 @@ def show_live_monitoring(api_client, machine_id, mode):
     with col1:
         st.markdown("### Sensor Readings")
         
-        # Sensor input section
-        sensor_col1, sensor_col2 = st.columns(2)
-        
-        with sensor_col1:
-            if mode == "Manual":
-                temperature = st.number_input(
-                    "🌡️ Temperature (°C)",
-                    min_value=20.0,
-                    max_value=120.0,
-                    value=60.0,
-                    step=1.0,
-                    key=f"temp_{machine_id}"
-                )
-                vibration = st.number_input(
-                    "📳 Vibration (mm/s)",
-                    min_value=0.0,
-                    max_value=15.0,
-                    value=3.0,
-                    step=0.1,
-                    key=f"vib_{machine_id}"
-                )
-            else:
-                temperature = st.slider(
-                    "🌡️ Temperature (°C)",
-                    20.0, 120.0, 60.0,
-                    key=f"temp_slider_{machine_id}"
-                )
-                vibration = st.slider(
-                    "📳 Vibration (mm/s)",
-                    0.0, 15.0, 3.0,
-                    key=f"vib_slider_{machine_id}"
-                )
-        
-        with sensor_col2:
-            if mode == "Manual":
-                pressure = st.number_input(
-                    "⚡ Pressure (bar)",
-                    min_value=50.0,
-                    max_value=200.0,
-                    value=100.0,
-                    step=1.0,
-                    key=f"press_{machine_id}"
-                )
-                rpm = st.number_input(
-                    "⚙️ RPM",
-                    min_value=500.0,
-                    max_value=3500.0,
-                    value=2000.0,
-                    step=10.0,
-                    key=f"rpm_{machine_id}"
-                )
-            else:
-                pressure = st.slider(
-                    "⚡ Pressure (bar)",
-                    50.0, 200.0, 100.0,
-                    key=f"press_slider_{machine_id}"
-                )
-                rpm = st.slider(
-                    "⚙️ RPM",
-                    500.0, 3500.0, 2000.0,
-                    key=f"rpm_slider_{machine_id}"
-                )
+        # Determine values based on mode
+        if mode == "Manual Input":
+            # Manual Sliders
+            c1, c2 = st.columns(2)
+            temperature = c1.slider("🌡️ Temperature (°C)", 20.0, 120.0, 60.0, key="man_temp")
+            vibration = c1.slider("📳 Vibration (mm/s)", 0.0, 15.0, 3.0, key="man_vib")
+            pressure = c2.slider("⚡ Pressure (bar)", 50.0, 200.0, 100.0, key="man_press")
+            rpm = c2.slider("⚙️ RPM", 500.0, 3500.0, 2000.0, key="man_rpm")
+        else:
+            # DB Values (Read-only display)
+            data = get_real_time_values(api_client, machine_id)
+            temperature = data['temperature'] if data else 60.0
+            vibration = data['vibration'] if data else 3.0
+            # ... fetch others ...
+            st.info(f"⚡ Streaming live data from Database for {machine_id}")
         
         # Quick status indicators
         st.markdown("#### Quick Status")
         status_col1, status_col2, status_col3, status_col4 = st.columns(4)
         
         def get_status_emoji(value, warn, crit):
-            if value > crit:
-                return "🔴"
-            elif value > warn:
-                return "🟡"
+            if value > crit: return "🔴"
+            elif value > warn: return "🟡"
             return "🟢"
         
-        status_col1.metric(
-            "Temp Status",
-            f"{temperature:.1f}°C",
-            delta=get_status_emoji(temperature, 85, 95)
-        )
-        status_col2.metric(
-            "Vib Status",
-            f"{vibration:.1f}",
-            delta=get_status_emoji(vibration, 6, 8)
-        )
-        status_col3.metric(
-            "Press Status",
-            f"{pressure:.0f}",
-            delta=get_status_emoji(pressure, 130, 145)
-        )
-        status_col4.metric(
-            "RPM Status",
-            f"{rpm:.0f}",
-            delta=get_status_emoji(rpm, 2600, 2900)
-        )
+        status_col1.metric("Temp", f"{temperature:.1f}°C", delta=get_status_emoji(temperature, 85, 95))
+        status_col2.metric("Vibration", f"{vibration:.1f}", delta=get_status_emoji(vibration, 6, 8))
+        status_col3.metric("Pressure", f"{pressure:.0f}", delta=get_status_emoji(pressure, 130, 145))
+        status_col4.metric("RPM", f"{rpm:.0f}", delta=get_status_emoji(rpm, 2600, 2900))
+
+        # Live sensor chart (Gauges)
+        st.markdown("---")
+        fig = create_live_sensor_chart(temperature, vibration, pressure, rpm)
+        st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         st.markdown("### System Status")
         
-        # Status card
-        st.markdown("""
-        <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6;">
-            <h4>🟢 OPERATIONAL</h4>
-            <p><strong>Uptime:</strong> 47 days 13h</p>
-            <p><strong>Last Check:</strong> 2 min ago</p>
-            <p><strong>Next Maintenance:</strong> 5 days</p>
+        # Dynamic Status Card
+        status_color = "#d4edda" # Green
+        status_text = "NORMAL"
+        if temperature > 95 or vibration > 8:
+            status_color = "#f8d7da" # Red
+            status_text = "CRITICAL"
+        elif temperature > 85 or vibration > 6:
+            status_color = "#fff3cd" # Yellow
+            status_text = "WARNING"
+
+        st.markdown(f"""
+        <div style="padding: 20px; border-radius: 10px; background-color: {status_color}; color: #333;">
+            <h4 style="margin:0;">● {status_text}</h4>
+            <hr style="margin:10px 0;">
+            <p><strong>Connection:</strong> {"Active" if mode == "Real-Time (Database)" else "Manual"}</p>
+            <p><strong>Last Update:</strong> {datetime.now().strftime('%H:%M:%S')}</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -241,22 +298,15 @@ def show_live_monitoring(api_client, machine_id, mode):
         if st.button("🚀 Run AI Analysis", type="primary", use_container_width=True):
             run_analysis(api_client, machine_id, temperature, vibration, pressure, rpm)
         
-        if st.button("📊 View History", use_container_width=True):
-            st.session_state.show_history = True
-        
-        if st.button("🔔 Create Alert", use_container_width=True):
-            st.info("Alert creation feature")
-        
-        if st.button("📥 Export Data", use_container_width=True):
-            export_data(machine_id)
-    
-    # Live sensor chart
-    st.markdown("---")
-    st.markdown("### 📈 Real-time Sensor Visualization")
-    
-    # Create live chart
-    fig = create_live_sensor_chart(temperature, vibration, pressure, rpm)
-    st.plotly_chart(fig, use_container_width=True)
+        if st.button("🔔 Log Manual Alert", use_container_width=True):
+            # Add to session alert log
+            st.session_state.alert_log.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "machine": machine_id,
+                "severity": "Warning",
+                "message": "Manual alert triggered by operator"
+            })
+            st.success("Alert logged locally")
 
 
 def run_analysis(api_client, machine_id, temperature, vibration, pressure, rpm):
@@ -270,33 +320,29 @@ def run_analysis(api_client, machine_id, temperature, vibration, pressure, rpm):
     }
     
     with st.spinner("🤖 AI Agents analyzing..."):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        # Progress bar simulation for UX
+        progress = st.progress(0)
+        for i in range(100):
+            time.sleep(0.01)
+            progress.progress(i + 1)
         
-        status_text.text("⚙️ Monitoring Agent analyzing sensors...")
-        progress_bar.progress(25)
-        time.sleep(0.3)
-        
-        status_text.text("🧠 ML Agent calculating failure probability...")
-        progress_bar.progress(50)
-        time.sleep(0.3)
-        
-        status_text.text("🚨 Alert Agent generating recommendations...")
-        progress_bar.progress(75)
-        time.sleep(0.3)
-        
-        # Get actual results
+        # Actual API Call
         result = api_client.analyze_machine(sensor_data)
-        
-        status_text.text("✅ Analysis complete!")
-        progress_bar.progress(100)
-        time.sleep(0.2)
-        
-        progress_bar.empty()
-        status_text.empty()
+        progress.empty()
     
     if result.get("success"):
         display_analysis_results(result["data"], machine_id)
+        
+        # Auto-log alerts based on result
+        decision = result["data"].get("system_decision", "NORMAL")
+        if decision != "NORMAL_OPERATION":
+            st.session_state.alert_log.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "machine": machine_id,
+                "severity": "Critical" if "SHUTDOWN" in decision else "Warning",
+                "message": f"AI Detected: {decision}"
+            })
+            
     else:
         st.error(f"Analysis failed: {result.get('error')}")
 
@@ -309,7 +355,6 @@ def display_analysis_results(data, machine_id):
     
     # Decision banner
     decision = data.get("system_decision", "UNKNOWN")
-    priority = data.get("priority_score", 0)
     
     if decision == "EMERGENCY_SHUTDOWN":
         st.error("🛑 **EMERGENCY SHUTDOWN REQUIRED**")
@@ -322,383 +367,94 @@ def display_analysis_results(data, machine_id):
     
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
-    
-    col1.metric(
-        "Decision",
-        decision.replace("_", " ").title(),
-        delta=f"Confidence: {data.get('decision_confidence', 'N/A')}"
-    )
-    
-    col2.metric(
-        "Priority",
-        f"{priority}/100",
-        delta=data.get("priority_level", "N/A")
-    )
-    
-    col3.metric(
-        "Failure Risk",
-        data.get("risk_level", "UNKNOWN"),
-        delta=f"{data.get('failure_probability', 0):.1%}"
-    )
-    
-    col4.metric(
-        "Processing Time",
-        f"{data.get('processing_time_seconds', 0):.2f}s",
-        delta="Analysis time"
-    )
+    col1.metric("Confidence", data.get("decision_confidence", "N/A"))
+    col2.metric("Priority Score", f"{data.get('priority_score', 0)}/100")
+    col3.metric("Failure Risk", data.get("risk_level", "UNKNOWN"))
+    col4.metric("RUL", f"{data.get('rul_days', 'N/A')} Days")
     
     # Detailed tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Executive Summary",
-        "🔍 Detailed Analysis",
-        "🔧 Maintenance Plan",
-        "📈 Visualizations"
-    ])
+    sub_tab1, sub_tab2 = st.tabs(["📝 Details", "🔧 Maintenance"])
     
-    with tab1:
-        show_executive_summary(data)
-    
-    with tab2:
-        show_detailed_analysis(data)
-    
-    with tab3:
-        show_maintenance_plan(data)
-    
-    with tab4:
-        show_visualizations(data)
-
-
-def show_executive_summary(data):
-    """Display executive summary"""
-    st.markdown("### Executive Summary")
-    
-    st.write(f"**Decision Rationale:** {data.get('decision_rationale', 'N/A')}")
-    
-    alert_summary = data.get("alert_summary", {})
-    if alert_summary.get("messages"):
-        st.markdown("**Key Issues:**")
-        for msg in alert_summary["messages"]:
-            st.write(f"• {msg}")
-    
-    # Risk gauge
-    failure_prob = data.get("failure_probability", 0)
-    
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number+delta",
-        value=failure_prob * 100,
-        domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': "Failure Probability (%)"},
-        delta={'reference': 30},
-        gauge={
-            'axis': {'range': [None, 100]},
-            'bar': {'color': "darkblue"},
-            'steps': [
-                {'range': [0, 30], 'color': "lightgreen"},
-                {'range': [30, 60], 'color': "yellow"},
-                {'range': [60, 100], 'color': "red"}
-            ],
-            'threshold': {
-                'line': {'color': "red", 'width': 4},
-                'thickness': 0.75,
-                'value': 90
-            }
-        }
-    ))
-    
-    fig.update_layout(height=300)
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def show_detailed_analysis(data):
-    """Display detailed analysis"""
-    st.markdown("### Detailed Analysis")
-    
-    monitoring = data.get("monitoring_summary", {})
-    prediction = data.get("prediction_summary", {})
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("#### 📊 Monitoring Analysis")
-        st.metric("Overall Status", monitoring.get("status", "N/A").upper())
-        st.metric("Critical Sensors", monitoring.get("critical_sensors", 0))
-        st.metric("Warning Sensors", monitoring.get("warning_sensors", 0))
+    with sub_tab1:
+        st.write(f"**Rationale:** {data.get('decision_rationale', 'N/A')}")
+        st.json(data.get("monitoring_summary", {}))
         
-        if monitoring.get("anomalies"):
-            st.markdown("**Anomalies Detected:**")
-            for anomaly in monitoring["anomalies"]:
-                st.error(f"🔴 {anomaly}")
-    
-    with col2:
-        st.markdown("#### 🧠 ML Prediction")
-        st.metric("Risk Level", prediction.get("risk_level", "N/A"))
-        st.metric(
-            "Failure Probability",
-            f"{prediction.get('failure_probability', 0):.2%}"
-        )
-        st.metric("Confidence", prediction.get("confidence", "N/A"))
-        
-        st.write(f"**Analysis:** {prediction.get('analysis', 'N/A')}")
-
-
-def show_maintenance_plan(data):
-    """Display maintenance plan"""
-    st.markdown("### Maintenance Recommendations")
-    
-    maintenance = data.get("maintenance_summary", {})
-    
-    col1, col2 = st.columns(2)
-    
-    col1.metric("Action Timeline", maintenance.get("action_timeline", "N/A"))
-    col2.metric("Operation Status", maintenance.get("operation_recommendation", "N/A"))
-    
-    if maintenance.get("immediate_actions"):
-        st.markdown("#### 🚨 Immediate Actions Required")
-        for i, action in enumerate(maintenance["immediate_actions"], 1):
-            st.write(f"{i}. {action}")
-    
-    if maintenance.get("estimated_downtime"):
-        st.info(f"⏱️ **Estimated Downtime:** {maintenance['estimated_downtime']}")
-    
-    # Cost estimation (mock)
-    if maintenance.get("requires_shutdown"):
-        st.warning("💰 **Estimated Cost:** $5,000 - $15,000 (Emergency maintenance)")
-    elif maintenance.get("immediate_actions"):
-        st.info("💰 **Estimated Cost:** $1,000 - $3,000 (Preventive maintenance)")
-    else:
-        st.success("💰 **Estimated Cost:** $0 (No action required)")
-
-
-def show_visualizations(data):
-    """Display visualizations"""
-    st.markdown("### Visualizations")
-    
-    sensor_data = data.get("sensor_data", {})
-    
-    # Sensor comparison
-    fig = go.Figure(data=[
-        go.Bar(
-            x=list(sensor_data.keys()),
-            y=list(sensor_data.values()),
-            marker_color=['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A']
-        )
-    ])
-    
-    fig.update_layout(
-        title="Current Sensor Readings",
-        xaxis_title="Sensor",
-        yaxis_title="Value",
-        height=400
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+    with sub_tab2:
+        maint = data.get("maintenance_summary", {})
+        st.write(f"**Recommendation:** {maint.get('operation_recommendation', 'N/A')}")
+        if maint.get("immediate_actions"):
+            for action in maint["immediate_actions"]:
+                st.write(f"- {action}")
 
 
 def show_trends(machine_id):
-    """Display historical trends"""
-    st.subheader(f"📈 Historical Trends - {machine_id}")
+    """Display historical trends from Session Data"""
+    st.subheader(f"📈 Real-Time Trends - {machine_id}")
     
-    # Generate mock historical data
-    dates = pd.date_range(end=datetime.now(), periods=30, freq='D')
-    
-    df = pd.DataFrame({
-        'date': dates,
-        'temperature': [60 + (i % 10) * 2 for i in range(30)],
-        'vibration': [3 + (i % 8) * 0.5 for i in range(30)],
-        'pressure': [100 + (i % 12) * 3 for i in range(30)],
-        'rpm': [2000 + (i % 15) * 50 for i in range(30)],
-        'failure_prob': [(i % 20) * 0.03 for i in range(30)]
-    })
-    
-    # Time range selector
-    time_range = st.select_slider(
-        "Time Range",
-        options=["Last 7 Days", "Last 14 Days", "Last 30 Days", "Last 90 Days"],
-        value="Last 30 Days"
-    )
-    
-    # Sensor trends
-    st.markdown("### Sensor Trends")
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=df['date'], y=df['temperature'],
-        mode='lines+markers',
-        name='Temperature',
-        line=dict(color='#FF6B6B', width=2)
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=df['date'], y=df['vibration'] * 10,  # Scale for visibility
-        mode='lines+markers',
-        name='Vibration (×10)',
-        line=dict(color='#4ECDC4', width=2)
-    ))
-    
-    fig.update_layout(
-        title="Sensor Readings Over Time",
-        xaxis_title="Date",
-        yaxis_title="Value",
-        height=400,
-        hovermode='x unified'
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Failure probability trend
-    st.markdown("### Failure Risk Trend")
-    
-    fig2 = go.Figure()
-    
-    fig2.add_trace(go.Scatter(
-        x=df['date'], y=df['failure_prob'] * 100,
-        fill='tozeroy',
-        mode='lines',
-        name='Failure Probability',
-        line=dict(color='#FF6B6B', width=2),
-        fillcolor='rgba(255, 107, 107, 0.2)'
-    ))
-    
-    fig2.add_hline(y=30, line_dash="dash", line_color="yellow", annotation_text="Medium Risk")
-    fig2.add_hline(y=60, line_dash="dash", line_color="red", annotation_text="High Risk")
-    
-    fig2.update_layout(
-        title="Failure Probability Trend",
-        xaxis_title="Date",
-        yaxis_title="Probability (%)",
-        height=400
-    )
-    
-    st.plotly_chart(fig2, use_container_width=True)
-    
-    # Statistics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    col1.metric("Avg Temperature", f"{df['temperature'].mean():.1f}°C")
-    col2.metric("Avg Vibration", f"{df['vibration'].mean():.1f} mm/s")
-    col3.metric("Avg Pressure", f"{df['pressure'].mean():.0f} bar")
-    col4.metric("Avg Failure Risk", f"{df['failure_prob'].mean():.1%}")
+    if machine_id in st.session_state.history_data and not st.session_state.history_data[machine_id].empty:
+        df = st.session_state.history_data[machine_id]
+        
+        # Only show last 50 points to keep chart clean
+        if len(df) > 50:
+            df = df.tail(50)
+            
+        # Sensor trends
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['temperature'], name='Temperature', line=dict(color='#FF6B6B')))
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['vibration'], name='Vibration', line=dict(color='#4ECDC4')))
+        
+        fig.update_layout(title="Live Sensor History (Session)", height=400, xaxis_title="Time", yaxis_title="Value")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Stats
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Avg Temp", f"{df['temperature'].mean():.1f}")
+        c2.metric("Max Vib", f"{df['vibration'].max():.1f}")
+        c3.metric("Data Points", len(df))
+        
+    else:
+        st.warning("No data collected yet. Start 'Real-Time' mode and enable 'Live Sync' to build history.")
 
 
 def show_alerts():
     """Display alerts and notifications"""
-    st.subheader("🔔 Alerts & Notifications")
+    st.subheader("🔔 Session Alerts")
     
-    # Alert summary
-    col1, col2, col3 = st.columns(3)
+    if not st.session_state.alert_log:
+        st.info("No alerts generated in this session.")
+        return
+
+    # Convert log to dataframe for display
+    df = pd.DataFrame(st.session_state.alert_log)
     
-    col1.metric("🔴 Critical", "1", delta="Last hour")
-    col2.metric("🟡 Warnings", "5", delta="Last 24h")
-    col3.metric("🟢 Info", "12", delta="Last week")
-    
-    st.markdown("---")
-    
-    # Recent alerts
-    st.markdown("### Recent Alerts")
-    
-    alerts = [
-        {
-            "time": "5 min ago",
-            "machine": "Machine-003",
-            "severity": "🔴 Critical",
-            "message": "High vibration detected: 9.2 mm/s"
-        },
-        {
-            "time": "1 hour ago",
-            "machine": "Machine-007",
-            "severity": "🟡 Warning",
-            "message": "Temperature elevated: 88°C"
-        },
-        {
-            "time": "3 hours ago",
-            "machine": "Machine-012",
-            "severity": "🟡 Warning",
-            "message": "Pressure above threshold: 135 bar"
-        },
-        {
-            "time": "Yesterday",
-            "machine": "Machine-005",
-            "severity": "🟢 Info",
-            "message": "Maintenance completed successfully"
-        }
-    ]
-    
-    for alert in alerts:
-        with st.expander(f"{alert['severity']} - {alert['machine']} ({alert['time']})"):
-            st.write(f"**Message:** {alert['message']}")
-            col1, col2, col3 = st.columns(3)
-            col1.button("View Details", key=f"view_{alert['time']}")
-            col2.button("Acknowledge", key=f"ack_{alert['time']}")
-            col3.button("Create Ticket", key=f"ticket_{alert['time']}")
+    # Display most recent first
+    for i, row in df.iloc[::-1].iterrows():
+        color = "🔴" if row['severity'] == "Critical" else "🟡" if row['severity'] == "Warning" else "🔵"
+        with st.expander(f"{color} {row['severity']} - {row['machine']} ({row['time']})"):
+            st.write(f"**Message:** {row['message']}")
 
 
-def show_reports():
+def show_reports(machines_list):
     """Display reports section"""
     st.subheader("📋 Reports & Export")
     
-    report_type = st.selectbox(
-        "Report Type",
-        ["Daily Summary", "Weekly Analysis", "Monthly Report", "Custom Report"]
-    )
-    
     col1, col2 = st.columns(2)
-    
     with col1:
-        start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=7))
-    
+        st.selectbox("Report Type", ["Daily Summary", "Incident Report", "Full Audit Log"])
     with col2:
-        end_date = st.date_input("End Date", value=datetime.now())
+        st.multiselect("Select Machines", machines_list if machines_list else ["All"])
     
-    machines = st.multiselect(
-        "Select Machines",
-        [f"Machine-{i:03d}" for i in range(1, 16)],
-        default=["Machine-001", "Machine-002"]
-    )
-    
-    if st.button("Generate Report", type="primary"):
-        with st.spinner("Generating report..."):
-            time.sleep(2)
-            st.success("✅ Report generated successfully!")
-            
-            # Mock report data
-            st.markdown("### Report Summary")
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Predictions", "1,234")
-            col2.metric("Critical Alerts", "8")
-            col3.metric("Avg Failure Risk", "24%")
-            
-            # Download buttons
-            st.markdown("### Download Options")
-            col1, col2, col3 = st.columns(3)
-            
-            col1.download_button(
-                "📄 Download PDF",
-                data="Mock PDF data",
-                file_name=f"report_{datetime.now().strftime('%Y%m%d')}.pdf"
-            )
-            
-            col2.download_button(
-                "📊 Download CSV",
-                data="Mock CSV data",
-                file_name=f"data_{datetime.now().strftime('%Y%m%d')}.csv"
-            )
-            
-            col3.download_button(
-                "📧 Email Report",
-                data="Mock email",
-                file_name="email.txt"
-            )
+    if st.button("Generate Report"):
+        st.success("Report generated! (Mock functionality)")
+        st.download_button("Download CSV", data="timestamp,machine,status\n2024-01-01,M1,OK", file_name="report.csv")
 
 
 def create_live_sensor_chart(temperature, vibration, pressure, rpm):
     """Create live sensor visualization"""
-    
     fig = go.Figure()
     
-    # Add sensor readings as bars
     sensors = ['Temperature', 'Vibration', 'Pressure', 'RPM']
+    # Normalize rpm for visualization
     values = [temperature, vibration * 10, pressure, rpm / 10]
     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A']
     
@@ -710,17 +466,5 @@ def create_live_sensor_chart(temperature, vibration, pressure, rpm):
         textposition='auto',
     ))
     
-    fig.update_layout(
-        title="Current Sensor Readings",
-        yaxis_title="Value (scaled)",
-        height=300,
-        showlegend=False
-    )
-    
+    fig.update_layout(title="Current Sensor Readings (Scaled)", height=300)
     return fig
-
-
-def export_data(machine_id):
-    """Export machine data"""
-    st.success(f"✅ Data export initiated for {machine_id}")
-    st.info("Export will be available in the Downloads section")

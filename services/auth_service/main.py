@@ -10,7 +10,7 @@ from datetime import timedelta
 
 from config.settings import settings
 from .database import get_db, init_db
-from .models import UserCreate, UserLogin, UserResponse, Token, Machine, MachineCreate, MachineResponse
+from .models import UserCreate, UserLogin, UserResponse, Token, Machine, MachineCreate, MachineResponse, Telemetry, TelemetryCreate
 from .auth import (
     authenticate_user,
     create_access_token,
@@ -150,6 +150,25 @@ async def create_machine(machine: MachineCreate, db: Session = Depends(get_db)):
 async def get_machines(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """Get all active machines"""
     return db.query(Machine).filter(Machine.is_active == True).offset(skip).limit(limit).all()
+
+# Add to services/auth_service/main.py
+# Add Telemetry to your imports at the top
+
+
+@app.post("/telemetry", status_code=201)
+async def record_telemetry(data: dict, db: Session = Depends(get_db)):
+    """Saves incoming sensor data to the telemetry table"""
+    new_reading = Telemetry(**data)
+    db.add(new_reading)
+    db.commit()
+    return {"status": "success"}
+
+@app.get("/telemetry/latest/{machine_name}")
+async def get_latest_telemetry(machine_name: str, db: Session = Depends(get_db)):
+    """Returns the most recent reading for a specific machine"""
+    return db.query(Telemetry).filter(Telemetry.machine_name == machine_name)\
+             .order_by(Telemetry.timestamp.desc()).first()
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
