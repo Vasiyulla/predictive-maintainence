@@ -340,6 +340,44 @@ async def proxy_add_machine(machine_data: dict, user=Depends(verify_token)):
             return response.json()
     except httpx.RequestError:
         raise HTTPException(status_code=503, detail="Auth service unavailable")
+
+# --- Add these Telemetry Proxy Routes to api_gateway/main.py ---
+# In services/api_gateway/main.py
+# --- Updated routes in services/api_gateway/main.py ---
+
+# --- Add or Replace these routes in services/api_gateway/main.py ---
+
+@app.get("/api/machines")
+async def proxy_get_machines(): # Remove Depends(verify_token)
+    """Public route for simulator to fetch machine names"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{AUTH_SERVICE_URL}/machines")
+            return response.json()
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
+
+@app.post("/api/telemetry", status_code=201)
+async def proxy_record_telemetry(data: dict): # Added missing proxy route
+    """Forward simulator data to Auth Service (Port 8001)"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{AUTH_SERVICE_URL}/telemetry", json=data)
+            return response.json()
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
+@app.get("/api/telemetry/latest/{machine_name}")
+async def proxy_get_latest_telemetry(machine_name: str, user=Depends(verify_token)):
+    """Fetch latest telemetry for the Dashboard (Requires Login)"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{AUTH_SERVICE_URL}/telemetry/latest/{machine_name}")
+            return response.json()
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
